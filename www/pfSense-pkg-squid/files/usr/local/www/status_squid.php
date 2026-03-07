@@ -1,24 +1,12 @@
 <?php
 /*
- * squid_monitor.php
+ * status_squid.php
  *
  * part of pfSense (https://www.pfsense.org)
  * Copyright (c) 2015-2026 Rubicon Communications, LLC (Netgate)
- * Copyright (C) 2012-2014 Marcello Coutinho
- * Copyright (C) 2012-2014 Carlos Cesario <carloscesario@gmail.com>
  * All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 include("guiconfig.inc");
@@ -27,6 +15,7 @@ $pgtitle = array(gettext("Package"), gettext("Squid"), gettext("Status"));
 $shortcut_section = "squid";
 include("head.inc");
 
+// Tabs
 $tab_array = array();
 if ($_REQUEST["menu"] == "reverse") {
 	$tab_array[] = array(gettext("General"), false, "/pkg_edit.php?xml=squid_reverse_general.xml&amp;id=0");
@@ -50,59 +39,71 @@ if ($_REQUEST["menu"] == "reverse") {
 }
 display_top_tabs($tab_array);
 
+// Squid Status Function
 function squid_status() {
-	if (is_service_running('squid')) {
-		$proxy_ifaces = explode(",", config_get_path('installedpackages/squid/config/0/active_interface', ''));
-		foreach ($proxy_ifaces as $iface) {
-			if (get_interface_ip($iface)) {
-				$ip = get_interface_ip($iface);
-				$lip = '127.0.0.1';
-			} else {
-				$ip = get_interface_ipv6($iface);
-				$lip = '::1';
-			}
-			exec("/usr/local/sbin/squidclient -l " . escapeshellarg($lip) .
-				" -h " . escapeshellarg($ip) . " mgr:info", $result);
-		}
-	} else {
-		return(gettext('Squid Proxy is not running.'));
+	if (!is_service_running('squid')) {
+		return gettext('Squid Proxy is not running.');
 	}
-	$i = 0;
-	$matchbegin = "Squid Object Cache";
-	foreach ($result as $line) {
-		if (preg_match("/{$matchbegin}/", $line)) {
-			$begin = $i;
-		}
-		$i++;
-	}
-	
-	$output = "";
-	$i = 0;
-	
-	foreach ($result as $line) {
-		if ($i >= $begin) {
-			$output .= $line . "\n";
-		}
-		$i++;
-	}
-	return $output;
-}	
 
+	$proxy_ifaces = explode(",", config_get_path('installedpackages/squid/config/0/active_interface', ''));
+	$result = [];
+
+	// Squid 6: curl instead of squidclient
+	$squid_conf = '/usr/local/etc/squid/squid.conf';
+	$user = $pass = null;
+	if (file_exists($squid_conf)) {
+		$conf = file_get_contents($squid_conf);
+		if (preg_match('/^cachemgr_passwd\s+(\S+)\s+(\S+)/m', $conf, $m)) {
+			$user = $m[1];
+			$pass = $m[2];
+		}
+	}
+
+	foreach ($proxy_ifaces as $iface) {
+		$ip = get_interface_ip($iface) ?: get_interface_ipv6($iface);
+		$port = 3128;
+
+		$cmd = "/usr/local/bin/curl -s --max-time 10 ";
+		if ($user && $pass) {
+			$cmd .= "-u '{$user}:{$pass}' ";
+		}
+		$cmd .= "http://{$ip}:{$port}/squid-internal-mgr/info";
+
+		exec($cmd, $output_iface);
+		$result = array_merge($result, $output_iface);
+	}
+
+	// Parse output for "Squid Object Cache"
+	$begin = 0;
+	foreach ($result as $i => $line) {
+		if (preg_match("/Squid Object Cache/", $line)) {
+			$begin = $i;
+			break;
+		}
+	}
+
+	$output = "";
+	for ($i = $begin; $i < count($result); $i++) {
+		$output .= $result[$i] . "\n";
+	}
+
+	return $output;
+}
 ?>
 
 <div class="panel panel-default">
-        <div class="panel-heading"><h2 class="panel-title">Connection list</h2></div>
-        <div class="panel-body table-responsive">
-        <table class="table table-striped table-hover table-condensed">
-        <tbody>
-		<?php 
-		print "<pre>";
-		print htmlentities(squid_status());
-		print "</pre>";
-		?>
-        </tbody>
-        </table>
-        </div>
+	<div class="panel-heading"><h2 class="panel-title">Connection list</h2></div>
+	<div class="panel-body table-responsive">
+		<table class="table table-striped table-hover table-condensed">
+			<tbody>
+				<?php
+				print "<pre>";
+				print htmlentities(squid_status());
+				print "</pre>";
+				?>
+			</tbody>
+		</table>
+	</div>
 </div>
 
 <?php include("foot.inc"); ?>
